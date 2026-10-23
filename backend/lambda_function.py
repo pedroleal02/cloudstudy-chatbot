@@ -7,7 +7,7 @@ from botocore.exceptions import ClientError
 bedrock = boto3.client("bedrock-runtime", region_name=os.environ.get("AWS_REGION", "us-east-1"))
 
 # Modelo padrão (Claude 3 Haiku)
-MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
+MODEL_ID = "us.anthropic.claude-3-haiku-20240307-v1:0"
 
 def lambda_handler(event, context):
     try:
