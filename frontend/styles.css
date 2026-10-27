@@ -50,6 +50,7 @@ body {
   font-size: 14px;
   line-height: 1.4;
   word-break: break-word;
+  white-space: pre-wrap;
 }
 
 .user-message {
@@ -96,4 +97,23 @@ body {
 
 .chat-input-area button:hover {
   background-color: #006bce;
+}
+.error-message {
+  background-color: #fdecea;
+  color: #b3261e;
+  border: 1px solid #f5c2c0;
+}
+
+.loading-message {
+  font-style: italic;
+  color: #65676b;
+}
+
+.chat-input-area input:disabled {
+  background-color: #f5f5f5;
+}
+
+.chat-input-area button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }

@@ -5,13 +5,14 @@ const sendBtn = document.getElementById('send-btn');
 // Chama o backend (POST /chat) e devolve o texto da resposta
 async function sendToApi(message) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 s
+  // um pouco acima do timeout da Lambda (30 s), para a Lambda falhar primeiro
+  const timeoutId = setTimeout(() => controller.abort(), 35000);
 
   try {
     const response = await fetch(`${API_URL}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ pergunta: message }), // a Lambda espera "pergunta"
       signal: controller.signal,
     });
 
@@ -23,13 +24,18 @@ async function sendToApi(message) {
     }
 
     if (!response.ok) {
+      // "erro" vem da Lambda; "message" vem do próprio API Gateway
+      if (data.erro) throw new Error(data.erro);
       if (response.status === 429) {
         throw new Error("Muitas requisições. Aguarde alguns segundos e tente de novo.");
       }
-      throw new Error(data.error || data.message || `Erro ${response.status}`);
+      throw new Error(data.message || `Erro ${response.status}`);
     }
 
-    return data.reply;
+    if (!data.resposta) {
+      throw new Error("A API não devolveu uma resposta.");
+    }
+    return data.resposta; // a Lambda devolve "resposta"
   } catch (err) {
     if (err.name === "AbortError") {
       throw new Error("A resposta demorou demais. Tente novamente.");
@@ -70,6 +76,8 @@ function setLoading(isLoading) {
 }
 
 async function handleSendMessage() {
+  if (userInput.disabled) return; // evita envio duplo
+
   const text = userInput.value.trim();
   if (!text) return;
 
@@ -95,7 +103,7 @@ async function handleSendMessage() {
 sendBtn.addEventListener('click', handleSendMessage);
 
 userInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
+  if (e.key === 'Enter' && !e.isComposing) {
     handleSendMessage();
   }
 });
