@@ -24,12 +24,17 @@ async function sendToApi(message) {
     }
 
     if (!response.ok) {
-      // "erro" vem da Lambda; "message" vem do próprio API Gateway
-      if (data.erro) throw new Error(data.erro);
+      if (data.erro) {
+        const ref = data.id_requisicao ? ` (ref: ${data.id_requisicao.slice(0, 8)})` : "";
+        throw new Error(data.erro + ref);
+      }
       if (response.status === 429) {
         throw new Error("Muitas requisições. Aguarde alguns segundos e tente de novo.");
       }
-      throw new Error(data.message || `Erro ${response.status}`);
+      if (response.status >= 500) {
+        throw new Error("O serviço está indisponível no momento. Tente novamente em instantes.");
+      }
+      throw new Error("Não foi possível processar a solicitação.");
     }
 
     if (!data.resposta) {
