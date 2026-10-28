@@ -196,10 +196,10 @@ def processar(event, id_requisicao):
     try:
         trechos = recuperar_trechos(pergunta)
 
-        # sem evidência nenhuma: nem chama o modelo, a resposta é honesta e mais barata
+        # sem trechos relevantes, o modelo ainda é chamado: o prompt manda ele
+        # negar que há evidência nas fontes, e `referencias` fica vazio
         if not trechos:
             logger.info("Nenhum trecho relevante para a pergunta.")
-            return resposta(200, {"resposta": MENSAGEM_SEM_EVIDENCIA, "referencias": []})
 
         etapa = "geração"
         texto = gerar_resposta(pergunta, trechos)

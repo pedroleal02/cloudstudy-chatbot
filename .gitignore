@@ -1,1 +1,3 @@
 grande.json
+__pycache__/
+*.pyc
