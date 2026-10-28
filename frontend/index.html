@@ -2,21 +2,59 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Chatbot</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>CloudStudy · Tutor virtual</title>
+  <meta name="description" content="Tutor virtual que responde com base nos seus materiais de estudo e mostra de onde veio cada informação." />
+  <meta name="theme-color" content="#f4f7fb" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#0e1522" media="(prefers-color-scheme: dark)" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E📚%3C/text%3E%3C/svg%3E" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Literata:wght@400;600&display=swap" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <main class="chat-container">
-    <header class="chat-header">Tutor virtual</header>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <h1>CloudStudy</h1>
+        <span class="tagline">Tutor virtual</span>
+      </div>
+      <button id="clear-btn" class="ghost" type="button" hidden>Nova conversa</button>
+    </header>
 
-    <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
+    <main id="chat-messages" class="chat" aria-live="polite">
+      <section id="empty-state" class="empty">
+        <h2>Pergunte sobre os seus materiais</h2>
+        <p>
+          As respostas vêm dos documentos de estudo. Cada informação traz um marcador
+          como este <span class="cite demo">1</span> que leva ao trecho de onde ela saiu.
+        </p>
+        <p>Cada pergunta é respondida de forma independente, então escreva-a por completo.</p>
+      </section>
+    </main>
 
-    <div class="chat-input-area">
-      <input id="user-input" type="text" placeholder="Digite sua pergunta..." autocomplete="off" maxlength="2000" />
-      <button id="send-btn" type="button">Enviar</button>
-    </div>
-  </main>
+    <footer class="composer">
+      <form id="chat-form" autocomplete="off">
+        <label for="user-input" class="sr-only">Sua pergunta</label>
+        <textarea
+          id="user-input"
+          rows="1"
+          maxlength="2000"
+          placeholder="Escreva sua pergunta"
+          aria-describedby="composer-hint"
+        ></textarea>
+        <button id="send-btn" type="submit" disabled>Enviar</button>
+      </form>
+      <div class="composer-meta">
+        <span id="composer-hint">Enter envia · Shift+Enter quebra a linha. A IA pode errar: confira as fontes.</span>
+        <span id="char-count" class="char-count" hidden></span>
+      </div>
+    </footer>
+  </div>
+
+  <noscript>Este site precisa de JavaScript para funcionar.</noscript>
 
   <script src="config.js"></script>
   <script src="script.js"></script>
