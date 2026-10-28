@@ -2,7 +2,7 @@ const chatMessages = document.getElementById('chat-messages');
 const userInput = document.getElementById('user-input');
 const sendBtn = document.getElementById('send-btn');
 
-// Chama o backend (POST /chat) e devolve o texto da resposta
+// Chama o backend (POST /chat) e devolve o objeto { resposta, referencias }
 async function sendToApi(message) {
   const controller = new AbortController();
   // um pouco acima do timeout da Lambda (30 s), para a Lambda falhar primeiro
@@ -35,7 +35,7 @@ async function sendToApi(message) {
     if (!data.resposta) {
       throw new Error("A API não devolveu uma resposta.");
     }
-    return data.resposta; // a Lambda devolve "resposta"
+    return data; // a Lambda devolve "resposta" e "referencias"
   } catch (err) {
     if (err.name === "AbortError") {
       throw new Error("A resposta demorou demais. Tente novamente.");
@@ -51,7 +51,7 @@ async function sendToApi(message) {
 }
 
 // sender: 'user' | 'bot' | 'error' | 'loading'
-function addMessage(text, sender) {
+function addMessage(text, sender, referencias = []) {
   const messageDiv = document.createElement('div');
   messageDiv.classList.add('message');
 
@@ -64,6 +64,14 @@ function addMessage(text, sender) {
   }
 
   messageDiv.textContent = text;
+
+  if (referencias.length > 0) {
+    const fontes = document.createElement('div');
+    fontes.classList.add('fontes');
+    fontes.textContent = 'Fontes: ' + referencias.map(r => `[${r.id}] ${r.arquivo}`).join(' · ');
+    messageDiv.appendChild(fontes);
+  }
+
   chatMessages.appendChild(messageDiv);
   chatMessages.scrollTop = chatMessages.scrollHeight;
   return messageDiv; // permite remover o "Digitando..." depois
@@ -88,9 +96,9 @@ async function handleSendMessage() {
   const loadingEl = addMessage('Digitando...', 'loading');
 
   try {
-    const reply = await sendToApi(text);
+    const dados = await sendToApi(text);
     loadingEl.remove();
-    addMessage(reply, 'bot');
+    addMessage(dados.resposta, 'bot', dados.referencias);
   } catch (err) {
     loadingEl.remove();
     addMessage(err.message, 'error');
