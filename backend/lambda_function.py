@@ -8,6 +8,9 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
+import modelos
+import notebooks
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -64,7 +67,7 @@ def resposta(status, corpo):
             "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
         },
-        "body": json.dumps(corpo, ensure_ascii=False),
+        "body": "" if corpo is None else json.dumps(corpo, ensure_ascii=False),
     }
 
 
@@ -87,11 +90,14 @@ def identificar_usuario(event):
     return usuario_id
 
 
-def extrair_pergunta(event):
+def ler_corpo_json(event, exemplo, somente_body=False):
     if not isinstance(event, dict):
         raise EntradaInvalida(400, "Requisição inválida.")
 
-    corpo = event["body"] if "body" in event else event
+    if somente_body:
+        corpo = event.get("body")
+    else:
+        corpo = event["body"] if "body" in event else event
 
     if isinstance(corpo, str):
         if event.get("isBase64Encoded"):
@@ -104,10 +110,16 @@ def extrair_pergunta(event):
         try:
             corpo = json.loads(corpo)
         except json.JSONDecodeError:
-            raise EntradaInvalida(400, 'Envie um JSON no formato {"pergunta": "..."}')
+            raise EntradaInvalida(400, f"Envie um JSON no formato {exemplo}")
 
     if not isinstance(corpo, dict):
-        raise EntradaInvalida(400, 'Envie um JSON no formato {"pergunta": "..."}')
+        raise EntradaInvalida(400, f"Envie um JSON no formato {exemplo}")
+
+    return corpo
+
+
+def extrair_pergunta(event):
+    corpo = ler_corpo_json(event, '{"pergunta": "..."}')
 
     pergunta = corpo.get("pergunta")
     if not isinstance(pergunta, str):
@@ -192,13 +204,96 @@ def referencias_citadas(texto, trechos):
     return refs
 
 
+ROTA_CHAT = "POST /chat"
+EXEMPLO_NOTEBOOK = '{"nome": "...", "descricao": "..."}'
+ERROS_DE_LIMITE = {"ThrottlingException", "ProvisionedThroughputExceededException", "RequestLimitExceeded"}
+
+
 def processar(event, id_requisicao):
+    # a identidade vem do token e é checada antes de qualquer outra coisa
     try:
         usuario_id = identificar_usuario(event)
+    except EntradaInvalida as erro:
+        logger.warning("Requisição sem usuário autenticado (authorizer ausente ou claims inválidos).")
+        return resposta_erro(erro.status, erro.mensagem)
+
+    # HTTP API payload 2.0 traz routeKey ("GET /notebooks/{notebookId}"); sem ele, é o chat
+    rota = event.get("routeKey") or ROTA_CHAT
+    if rota == ROTA_CHAT:
+        return processar_chat(event, usuario_id, id_requisicao)
+    if rota in ROTAS_NOTEBOOKS:
+        return processar_notebooks(rota, event, usuario_id, id_requisicao)
+
+    logger.warning("Rota sem tratador: %s", str(rota)[:80])
+    return resposta_erro(404, "Rota não encontrada.")
+
+
+def processar_notebooks(rota, event, usuario_id, id_requisicao):
+    try:
+        status, corpo = ROTAS_NOTEBOOKS[rota](event, usuario_id)
+        logger.info("%s: usuario=%s status=%s", rota, usuario_id[:8], status)
+        return resposta(status, corpo)
+
+    except EntradaInvalida as erro:
+        return resposta_erro(erro.status, erro.mensagem)
+    except modelos.DadoInvalido as erro:
+        return resposta_erro(400, str(erro))
+    except notebooks.NaoEncontrado:
+        return resposta_erro(404, "Notebook não encontrado.")
+
+    except ClientError as erro:
+        codigo = erro.response.get("Error", {}).get("Code", "Desconhecido")
+        logger.error("Erro do DynamoDB em %s: %s | %s", rota, codigo, erro)
+        if codigo in ERROS_DE_LIMITE:
+            return resposta_erro(429, "Muitas requisições. Tente novamente em instantes.")
+        return resposta_erro(500, "Erro interno ao processar a requisição.", id_requisicao)
+
+    except BotoCoreError as erro:
+        logger.error("Erro de conexão/SDK em %s: %s", rota, erro)
+        return resposta_erro(502, "Não foi possível falar com o banco de dados.", id_requisicao)
+
+
+def _id_do_notebook(event):
+    parametros = event.get("pathParameters")
+    return parametros.get("notebookId") if isinstance(parametros, dict) else None
+
+
+def rota_criar_notebook(event, usuario_id):
+    corpo = ler_corpo_json(event, EXEMPLO_NOTEBOOK, somente_body=True)
+    return 201, {"notebook": notebooks.criar(usuario_id, corpo)}
+
+
+def rota_listar_notebooks(event, usuario_id):
+    return 200, {"notebooks": notebooks.listar(usuario_id)}
+
+
+def rota_obter_notebook(event, usuario_id):
+    return 200, {"notebook": notebooks.obter(usuario_id, _id_do_notebook(event))}
+
+
+def rota_atualizar_notebook(event, usuario_id):
+    corpo = ler_corpo_json(event, EXEMPLO_NOTEBOOK, somente_body=True)
+    return 200, {"notebook": notebooks.atualizar(usuario_id, _id_do_notebook(event), corpo)}
+
+
+def rota_excluir_notebook(event, usuario_id):
+    notebooks.excluir(usuario_id, _id_do_notebook(event))
+    return 204, None
+
+
+ROTAS_NOTEBOOKS = {
+    "POST /notebooks": rota_criar_notebook,
+    "GET /notebooks": rota_listar_notebooks,
+    "GET /notebooks/{notebookId}": rota_obter_notebook,
+    "PATCH /notebooks/{notebookId}": rota_atualizar_notebook,
+    "DELETE /notebooks/{notebookId}": rota_excluir_notebook,
+}
+
+
+def processar_chat(event, usuario_id, id_requisicao):
+    try:
         pergunta = extrair_pergunta(event)
     except EntradaInvalida as erro:
-        if erro.status == 401:
-            logger.warning("Requisição sem usuário autenticado (authorizer ausente ou claims inválidos).")
         return resposta_erro(erro.status, erro.mensagem)
 
     logger.info("Pergunta recebida: usuario=%s", usuario_id[:8])
@@ -238,4 +333,4 @@ def lambda_handler(event, context):
         return processar(event, id_requisicao)
     except Exception:
         logger.exception("Erro inesperado")
-        return resposta_erro(500, "Erro interno ao processar a pergunta.", id_requisicao)
+        return resposta_erro(500, "Erro interno ao processar a requisição.", id_requisicao)
