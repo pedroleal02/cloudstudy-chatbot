@@ -434,3 +434,77 @@ button.cite:hover {
     animation: none;
   }
 }
+
+/* ---------- sessão e login ---------- */
+.session {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.user-email {
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.login {
+  margin: auto 0;
+  padding: 6vh 0 8vh;
+  max-width: 52ch;
+}
+
+.login h2 {
+  margin: 0;
+  font-family: var(--font-read);
+  font-size: clamp(1.6rem, 4.5vw, 2.1rem);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+
+.login p {
+  margin: 0.9rem 0 0;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.login-error {
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--error-line);
+  border-radius: 8px;
+  background: var(--error-bg);
+  color: var(--error-ink) !important;
+}
+
+.primary {
+  margin-top: 1.4rem;
+  min-height: 46px;
+  padding: 0 1.4rem;
+  border: 0;
+  border-radius: 12px;
+  background: var(--action);
+  color: var(--action-ink);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primary:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+
+.primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+@media (max-width: 480px) {
+  .user-email {
+    display: none;
+  }
+}

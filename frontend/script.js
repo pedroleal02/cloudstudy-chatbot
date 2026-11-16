@@ -7,6 +7,12 @@ const sendBtn = document.getElementById('send-btn');
 const clearBtn = document.getElementById('clear-btn');
 const counter = document.getElementById('char-count');
 const emptyState = document.getElementById('empty-state');
+const composer = document.querySelector('.composer');
+const loginScreen = document.getElementById('login-screen');
+const loginBtn = document.getElementById('login-btn');
+const loginError = document.getElementById('login-error');
+const logoutBtn = document.getElementById('logout-btn');
+const userEmail = document.getElementById('user-email');
 
 // API_URL vem do config.js (sem barra no final)
 const API_BASE = (typeof API_URL === 'string' ? API_URL : '').replace(/\/+$/, '');
@@ -295,6 +301,12 @@ form.addEventListener('submit', (e) => {
   const texto = input.value.trim();
   if (!texto || sending) return;
 
+  // token expirado: volta para a tela de entrada sem perder o que foi digitado
+  if (!Auth.getUser()) {
+    showLogin('Sua sessão expirou. Entre de novo para continuar.');
+    return;
+  }
+
   input.value = '';
   autosize();
   updateComposer();
@@ -310,6 +322,52 @@ clearBtn.addEventListener('click', () => {
   input.focus();
 });
 
-autosize();
-updateComposer();
-if (window.matchMedia('(pointer: fine)').matches) input.focus();
+// ---------- autenticação ----------
+
+function showApp(user) {
+  loginScreen.hidden = true;
+  chat.hidden = false;
+  composer.hidden = false;
+  userEmail.textContent = user.email;
+  userEmail.hidden = !user.email;
+  logoutBtn.hidden = false;
+  autosize();
+  updateComposer();
+  if (window.matchMedia('(pointer: fine)').matches) input.focus();
+}
+
+function showLogin(mensagem) {
+  chat.hidden = true;
+  composer.hidden = true;
+  clearBtn.hidden = true;
+  logoutBtn.hidden = true;
+  userEmail.hidden = true;
+  loginScreen.hidden = false;
+  loginBtn.disabled = false;
+  loginError.textContent = mensagem || '';
+  loginError.hidden = !mensagem;
+}
+
+loginBtn.addEventListener('click', async () => {
+  loginBtn.disabled = true; // evita cliques duplos enquanto redireciona
+  try {
+    await Auth.login();
+  } catch (err) {
+    showLogin(err.message);
+  }
+});
+
+logoutBtn.addEventListener('click', () => Auth.logout());
+
+async function boot() {
+  if (!Auth.configurado()) {
+    showLogin('O login ainda não foi configurado (COGNITO_CONFIG em config.js).');
+    return;
+  }
+  const retorno = await Auth.tratarRetorno();
+  const user = Auth.getUser();
+  if (user) showApp(user);
+  else showLogin(retorno.status === 'erro' ? retorno.mensagem : '');
+}
+
+boot();
