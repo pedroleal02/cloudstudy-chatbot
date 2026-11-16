@@ -14,18 +14,15 @@ const loginError = document.getElementById('login-error');
 const logoutBtn = document.getElementById('logout-btn');
 const userEmail = document.getElementById('user-email');
 
-// API_URL vem do config.js (sem barra no final)
 const API_BASE = (typeof API_URL === 'string' ? API_URL : '').replace(/\/+$/, '');
-// um pouco acima do timeout da Lambda (30 s), para a Lambda falhar primeiro
 const TIMEOUT_MS = 35000;
 const MAX_CHARS = input.maxLength > 0 ? input.maxLength : 2000;
 const SHOW_COUNTER_AT = 0.8;
+const MSG_SESSAO_EXPIRADA = 'Sua sessão expirou. Entre de novo para continuar.';
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
 let sending = false;
 let messageCount = 0;
-
-// ---------- utilidades ----------
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -39,8 +36,6 @@ const scrollBehavior = () => (reducedMotion.matches ? 'auto' : 'smooth');
 function scrollToBottom() {
   window.scrollTo({ top: document.documentElement.scrollHeight, behavior: scrollBehavior() });
 }
-
-// ---------- API ----------
 
 class ApiError extends Error {
   constructor(message, { status = 0, retryable = false } = {}) {
@@ -56,7 +51,7 @@ async function lerJson(response) {
     const data = await response.json();
     return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
   } catch {
-    return {}; // resposta sem JSON válido
+    return {};
   }
 }
 
@@ -76,10 +71,15 @@ function erroDaApi(status, data) {
   return new ApiError('Não foi possível processar a solicitação.', { status, retryable });
 }
 
-// Chama o backend (POST /chat) e devolve { resposta, referencias }
 async function sendToApi(pergunta) {
   if (!API_BASE) {
     throw new ApiError('A URL da API não está configurada. Verifique o config.js.');
+  }
+
+  const token = Auth.getIdToken();
+  if (!token) {
+    showLogin(MSG_SESSAO_EXPIRADA);
+    throw new ApiError(MSG_SESSAO_EXPIRADA, { status: 401 });
   }
 
   const controller = new AbortController();
@@ -88,13 +88,20 @@ async function sendToApi(pergunta) {
   try {
     const response = await fetch(`${API_BASE}/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pergunta }), // a Lambda espera "pergunta"
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ pergunta }),
       signal: controller.signal,
     });
 
     const data = await lerJson(response);
 
+    if (response.status === 401) {
+      showLogin(MSG_SESSAO_EXPIRADA);
+      throw new ApiError(MSG_SESSAO_EXPIRADA, { status: 401 });
+    }
     if (!response.ok) throw erroDaApi(response.status, data);
 
     if (typeof data.resposta !== 'string' || !data.resposta.trim()) {
@@ -106,14 +113,11 @@ async function sendToApi(pergunta) {
     if (err.name === 'AbortError') {
       throw new ApiError('A resposta demorou demais. Tente novamente.', { retryable: true });
     }
-    // falha de rede ou CORS
     throw new ApiError('Não foi possível conectar ao servidor. Verifique sua conexão e tente de novo.', { retryable: true });
   } finally {
     clearTimeout(timeoutId);
   }
 }
-
-// ---------- renderização ----------
 
 function addUser(text) {
   const node = el('article', 'msg msg-user', text);
@@ -142,13 +146,12 @@ function citeButton(numero, uid) {
     if (details) details.open = true;
     item.scrollIntoView({ behavior: scrollBehavior(), block: 'nearest' });
     item.classList.remove('flash');
-    void item.offsetWidth; // reinicia a animação
+    void item.offsetWidth;
     item.classList.add('flash');
   });
   return btn;
 }
 
-// Troca "[1]" ou "[1, 2]" por marcadores clicáveis, mas só quando a fonte existe
 function appendWithCitations(container, texto, idsValidos, uid) {
   const re = /\[(\d+(?:\s*,\s*\d+)*)\]/g;
   let ultimo = 0;
@@ -156,7 +159,7 @@ function appendWithCitations(container, texto, idsValidos, uid) {
 
   while ((m = re.exec(texto)) !== null) {
     const numeros = m[1].split(',').map((s) => Number(s.trim()));
-    if (!numeros.every((n) => idsValidos.has(n))) continue; // mantém como texto
+    if (!numeros.every((n) => idsValidos.has(n))) continue;
 
     container.appendChild(document.createTextNode(texto.slice(ultimo, m.index)));
     numeros.forEach((n) => container.appendChild(citeButton(n, uid)));
@@ -173,7 +176,7 @@ function buildSources(refs, uid) {
   refs.forEach((r) => {
     const item = el('li');
     item.id = `fonte-${uid}-${r.id}`;
-    item.value = r.id; // a numeração da lista bate com os marcadores
+    item.value = r.id;
     item.appendChild(el('strong', 'fonte-arquivo', String(r.arquivo || 'documento')));
     if (r.trecho) item.appendChild(el('p', 'trecho', String(r.trecho)));
     list.appendChild(item);
@@ -229,8 +232,6 @@ function addError(err, pergunta) {
   return node;
 }
 
-// ---------- fluxo principal ----------
-
 function updateComposer() {
   const len = input.value.length;
   sendBtn.disabled = sending || input.value.trim().length === 0;
@@ -254,7 +255,6 @@ async function ask(pergunta, { echo = true } = {}) {
   sending = true;
   updateComposer();
 
-  // erros antigos deixam de oferecer "Tentar de novo"
   chat.querySelectorAll('.msg-error .retry').forEach((b) => b.remove());
 
   emptyState.hidden = true;
@@ -276,12 +276,10 @@ async function ask(pergunta, { echo = true } = {}) {
   } finally {
     sending = false;
     updateComposer();
-    // no celular, focar abriria o teclado por cima da resposta
     if (window.matchMedia('(pointer: fine)').matches) input.focus();
   }
 }
 
-// ---------- eventos ----------
 
 input.addEventListener('input', () => {
   autosize();
@@ -301,9 +299,8 @@ form.addEventListener('submit', (e) => {
   const texto = input.value.trim();
   if (!texto || sending) return;
 
-  // token expirado: volta para a tela de entrada sem perder o que foi digitado
   if (!Auth.getUser()) {
-    showLogin('Sua sessão expirou. Entre de novo para continuar.');
+    showLogin(MSG_SESSAO_EXPIRADA);
     return;
   }
 
@@ -321,8 +318,6 @@ clearBtn.addEventListener('click', () => {
   window.scrollTo({ top: 0, behavior: scrollBehavior() });
   input.focus();
 });
-
-// ---------- autenticação ----------
 
 function showApp(user) {
   loginScreen.hidden = true;
@@ -349,7 +344,7 @@ function showLogin(mensagem) {
 }
 
 loginBtn.addEventListener('click', async () => {
-  loginBtn.disabled = true; // evita cliques duplos enquanto redireciona
+  loginBtn.disabled = true;
   try {
     await Auth.login();
   } catch (err) {

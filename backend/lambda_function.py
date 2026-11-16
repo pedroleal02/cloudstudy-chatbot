@@ -12,18 +12,18 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 MODEL_ID = os.environ["MODEL_ID"]
-KB_ID = os.environ["KB_ID"]  # ID da Knowledge Base (10 caracteres)
+KB_ID = os.environ["KB_ID"]
 N_RESULTADOS = int(os.environ.get("N_RESULTADOS", "4"))
-SCORE_MINIMO = float(os.environ.get("SCORE_MINIMO", "0"))  # 0 = não filtra por score
+SCORE_MINIMO = float(os.environ.get("SCORE_MINIMO", "0"))
 REGIAO = os.environ.get("AWS_REGION")
 
 # limites de entrada
 MIN_PERGUNTA = 2
-MAX_PERGUNTA = 2000          # caracteres
-MAX_BODY_BYTES = 16_000      # tamanho máximo da requisição, checado antes de interpretar o JSON
+MAX_PERGUNTA = 2000
+MAX_BODY_BYTES = 16_000
 CARACTERES_DE_CONTROLE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+ID_DE_USUARIO = re.compile(r"[A-Za-z0-9-]{8,64}")
 
-# Os timeouts somados ficam abaixo dos 30 s da Lambda e do API Gateway
 agente = boto3.client(
     "bedrock-agent-runtime",
     region_name=REGIAO,
@@ -70,18 +70,27 @@ def resposta(status, corpo):
 
 def resposta_erro(status, mensagem, id_requisicao=None):
     corpo = {"erro": mensagem}
-    # em erros do servidor, devolve só um código de rastreio (nenhum detalhe interno)
     if status >= 500 and id_requisicao:
         corpo["id_requisicao"] = id_requisicao
     return resposta(status, corpo)
 
 
+def identificar_usuario(event):
+    contexto = event.get("requestContext") if isinstance(event, dict) else None
+    autorizador = contexto.get("authorizer") if isinstance(contexto, dict) else None
+    jwt = autorizador.get("jwt") if isinstance(autorizador, dict) else None
+    claims = jwt.get("claims") if isinstance(jwt, dict) else None
+    usuario_id = claims.get("sub") if isinstance(claims, dict) else None
+
+    if not isinstance(usuario_id, str) or not ID_DE_USUARIO.fullmatch(usuario_id):
+        raise EntradaInvalida(401, "Não autenticado.")
+    return usuario_id
+
+
 def extrair_pergunta(event):
-    """Valida a requisição e devolve a pergunta limpa. Levanta EntradaInvalida se algo estiver errado."""
     if not isinstance(event, dict):
         raise EntradaInvalida(400, "Requisição inválida.")
 
-    # chamada pelo API Gateway: "body" em string; teste direto no console: o próprio evento
     corpo = event["body"] if "body" in event else event
 
     if isinstance(corpo, str):
@@ -134,7 +143,6 @@ def recuperar_trechos(pergunta):
         score = item.get("score")
         if not texto:
             continue
-        # só metadados no log (útil para calibrar SCORE_MINIMO), nunca o texto
         logger.info("Trecho recuperado: arquivo=%s score=%s", nome_arquivo(item.get("location")), score)
         if score is not None and score < SCORE_MINIMO:
             continue
@@ -147,7 +155,6 @@ def recuperar_trechos(pergunta):
 
 
 def escapar(texto):
-    # impede que a pergunta ou um documento "fechem" as tags <contexto> e <pergunta> do prompt
     return texto.replace("<", "&lt;").replace(">", "&gt;")
 
 
@@ -172,7 +179,6 @@ def gerar_resposta(pergunta, trechos):
 
 
 def referencias_citadas(texto, trechos):
-    """Devolve só os trechos que o modelo realmente citou ([1], [2]...)."""
     numeros = set()
     for grupo in re.findall(r"\[([\d,\s]+)\]", texto):
         numeros.update(int(n) for n in re.findall(r"\d+", grupo))
@@ -188,16 +194,19 @@ def referencias_citadas(texto, trechos):
 
 def processar(event, id_requisicao):
     try:
+        usuario_id = identificar_usuario(event)
         pergunta = extrair_pergunta(event)
     except EntradaInvalida as erro:
+        if erro.status == 401:
+            logger.warning("Requisição sem usuário autenticado (authorizer ausente ou claims inválidos).")
         return resposta_erro(erro.status, erro.mensagem)
+
+    logger.info("Pergunta recebida: usuario=%s", usuario_id[:8])
 
     etapa = "recuperação"
     try:
         trechos = recuperar_trechos(pergunta)
 
-        # sem trechos relevantes, o modelo ainda é chamado: o prompt manda ele
-        # negar que há evidência nas fontes, e `referencias` fica vazio
         if not trechos:
             logger.info("Nenhum trecho relevante para a pergunta.")
 
@@ -210,7 +219,6 @@ def processar(event, id_requisicao):
 
     except ClientError as erro:
         codigo = erro.response.get("Error", {}).get("Code", "Desconhecido")
-        # o detalhe fica só no log; o usuário recebe mensagens genéricas
         logger.error("Erro do Bedrock na etapa de %s: %s | %s", etapa, codigo, erro)
 
         if codigo == "ThrottlingException":
@@ -229,6 +237,5 @@ def lambda_handler(event, context):
     try:
         return processar(event, id_requisicao)
     except Exception:
-        # última barreira: qualquer falha inesperada vira um erro genérico, com traceback só no log
         logger.exception("Erro inesperado")
         return resposta_erro(500, "Erro interno ao processar a pergunta.", id_requisicao)
