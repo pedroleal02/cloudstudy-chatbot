@@ -14,15 +14,15 @@ const loginError = document.getElementById('login-error');
 const logoutBtn = document.getElementById('logout-btn');
 const userEmail = document.getElementById('user-email');
 
-const API_BASE = (typeof API_URL === 'string' ? API_URL : '').replace(/\/+$/, '');
-const TIMEOUT_MS = 35000;
 const MAX_CHARS = input.maxLength > 0 ? input.maxLength : 2000;
 const SHOW_COUNTER_AT = 0.8;
-const MSG_SESSAO_EXPIRADA = 'Sua sessão expirou. Entre de novo para continuar.';
+const MSG_SESSAO_EXPIRADA = Api.MSG_SESSAO_EXPIRADA;
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
 let sending = false;
 let messageCount = 0;
+
+// ---------- utilidades ----------
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -37,87 +37,7 @@ function scrollToBottom() {
   window.scrollTo({ top: document.documentElement.scrollHeight, behavior: scrollBehavior() });
 }
 
-class ApiError extends Error {
-  constructor(message, { status = 0, retryable = false } = {}) {
-    super(message);
-    this.name = 'ApiError';
-    this.status = status;
-    this.retryable = retryable;
-  }
-}
-
-async function lerJson(response) {
-  try {
-    const data = await response.json();
-    return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
-  } catch {
-    return {};
-  }
-}
-
-function erroDaApi(status, data) {
-  const ref = typeof data.id_requisicao === 'string' ? ` (ref: ${data.id_requisicao.slice(0, 8)})` : '';
-  const retryable = status === 429 || status >= 500;
-
-  if (typeof data.erro === 'string' && data.erro) {
-    return new ApiError(data.erro + ref, { status, retryable });
-  }
-  if (status === 429) {
-    return new ApiError('Muitas requisições. Aguarde alguns segundos e tente de novo.', { status, retryable });
-  }
-  if (status >= 500) {
-    return new ApiError('O serviço está indisponível no momento. Tente novamente em instantes.', { status, retryable });
-  }
-  return new ApiError('Não foi possível processar a solicitação.', { status, retryable });
-}
-
-async function sendToApi(pergunta) {
-  if (!API_BASE) {
-    throw new ApiError('A URL da API não está configurada. Verifique o config.js.');
-  }
-
-  const token = Auth.getIdToken();
-  if (!token) {
-    showLogin(MSG_SESSAO_EXPIRADA);
-    throw new ApiError(MSG_SESSAO_EXPIRADA, { status: 401 });
-  }
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
-  try {
-    const response = await fetch(`${API_BASE}/chat`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ pergunta }),
-      signal: controller.signal,
-    });
-
-    const data = await lerJson(response);
-
-    if (response.status === 401) {
-      showLogin(MSG_SESSAO_EXPIRADA);
-      throw new ApiError(MSG_SESSAO_EXPIRADA, { status: 401 });
-    }
-    if (!response.ok) throw erroDaApi(response.status, data);
-
-    if (typeof data.resposta !== 'string' || !data.resposta.trim()) {
-      throw new ApiError('A API não devolveu uma resposta.', { status: response.status, retryable: true });
-    }
-    return data;
-  } catch (err) {
-    if (err instanceof ApiError) throw err;
-    if (err.name === 'AbortError') {
-      throw new ApiError('A resposta demorou demais. Tente novamente.', { retryable: true });
-    }
-    throw new ApiError('Não foi possível conectar ao servidor. Verifique sua conexão e tente de novo.', { retryable: true });
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
+// ---------- renderização ----------
 
 function addUser(text) {
   const node = el('article', 'msg msg-user', text);
@@ -146,12 +66,13 @@ function citeButton(numero, uid) {
     if (details) details.open = true;
     item.scrollIntoView({ behavior: scrollBehavior(), block: 'nearest' });
     item.classList.remove('flash');
-    void item.offsetWidth;
+    void item.offsetWidth; // reinicia a animação
     item.classList.add('flash');
   });
   return btn;
 }
 
+// Troca "[1]" ou "[1, 2]" por marcadores clicáveis, mas só quando a fonte existe
 function appendWithCitations(container, texto, idsValidos, uid) {
   const re = /\[(\d+(?:\s*,\s*\d+)*)\]/g;
   let ultimo = 0;
@@ -159,7 +80,7 @@ function appendWithCitations(container, texto, idsValidos, uid) {
 
   while ((m = re.exec(texto)) !== null) {
     const numeros = m[1].split(',').map((s) => Number(s.trim()));
-    if (!numeros.every((n) => idsValidos.has(n))) continue;
+    if (!numeros.every((n) => idsValidos.has(n))) continue; // mantém como texto
 
     container.appendChild(document.createTextNode(texto.slice(ultimo, m.index)));
     numeros.forEach((n) => container.appendChild(citeButton(n, uid)));
@@ -176,7 +97,7 @@ function buildSources(refs, uid) {
   refs.forEach((r) => {
     const item = el('li');
     item.id = `fonte-${uid}-${r.id}`;
-    item.value = r.id;
+    item.value = r.id; // a numeração da lista bate com os marcadores
     item.appendChild(el('strong', 'fonte-arquivo', String(r.arquivo || 'documento')));
     if (r.trecho) item.appendChild(el('p', 'trecho', String(r.trecho)));
     list.appendChild(item);
@@ -232,10 +153,13 @@ function addError(err, pergunta) {
   return node;
 }
 
+// ---------- fluxo principal ----------
+
 function updateComposer() {
   const len = input.value.length;
   sendBtn.disabled = sending || input.value.trim().length === 0;
   clearBtn.disabled = sending;
+  notebooks.bloquear(sending); // não troca nem altera o notebook com uma pergunta em andamento
 
   const mostrar = len >= MAX_CHARS * SHOW_COUNTER_AT;
   counter.hidden = !mostrar;
@@ -255,6 +179,7 @@ async function ask(pergunta, { echo = true } = {}) {
   sending = true;
   updateComposer();
 
+  // erros antigos deixam de oferecer "Tentar de novo"
   chat.querySelectorAll('.msg-error .retry').forEach((b) => b.remove());
 
   emptyState.hidden = true;
@@ -265,7 +190,7 @@ async function ask(pergunta, { echo = true } = {}) {
   scrollToBottom();
 
   try {
-    const dados = await sendToApi(pergunta);
+    const dados = await Api.chat(pergunta);
     loading.remove();
     const node = addBot(dados.resposta, dados.referencias);
     node.scrollIntoView({ behavior: scrollBehavior(), block: 'start' });
@@ -276,10 +201,12 @@ async function ask(pergunta, { echo = true } = {}) {
   } finally {
     sending = false;
     updateComposer();
+    // no celular, focar abriria o teclado por cima da resposta
     if (window.matchMedia('(pointer: fine)').matches) input.focus();
   }
 }
 
+// ---------- eventos ----------
 
 input.addEventListener('input', () => {
   autosize();
@@ -299,6 +226,7 @@ form.addEventListener('submit', (e) => {
   const texto = input.value.trim();
   if (!texto || sending) return;
 
+  // token expirado: volta para a tela de entrada sem perder o que foi digitado
   if (!Auth.getUser()) {
     showLogin(MSG_SESSAO_EXPIRADA);
     return;
@@ -319,19 +247,50 @@ clearBtn.addEventListener('click', () => {
   input.focus();
 });
 
+// ---------- notebooks ----------
+
+// A conversa é descartada ao entrar em outro notebook (o histórico persistente
+// por notebook entra nos commits 11 a 14).
+function limparConversa() {
+  chat.querySelectorAll('.msg').forEach((n) => n.remove());
+  emptyState.hidden = false;
+  clearBtn.hidden = true;
+  input.value = '';
+  autosize();
+  updateComposer();
+}
+
+const notebooks = createNotebooks({
+  api: Api,
+  storage: window.sessionStorage,
+  view: NotebooksView,
+  onAbrir: () => {
+    limparConversa();
+    chat.hidden = false;
+    composer.hidden = false;
+    if (window.matchMedia('(pointer: fine)').matches) input.focus();
+  },
+  onFechar: () => {
+    chat.hidden = true;
+    composer.hidden = true;
+    clearBtn.hidden = true;
+  },
+});
+
+// ---------- autenticação ----------
+
+// Depois do login quem decide o que aparece é o controlador dos notebooks:
+// a lista, ou o notebook em que o usuário estava.
 function showApp(user) {
   loginScreen.hidden = true;
-  chat.hidden = false;
-  composer.hidden = false;
   userEmail.textContent = user.email;
   userEmail.hidden = !user.email;
   logoutBtn.hidden = false;
-  autosize();
-  updateComposer();
-  if (window.matchMedia('(pointer: fine)').matches) input.focus();
+  notebooks.iniciar(user.sub);
 }
 
 function showLogin(mensagem) {
+  notebooks.reset();
   chat.hidden = true;
   composer.hidden = true;
   clearBtn.hidden = true;
@@ -344,7 +303,7 @@ function showLogin(mensagem) {
 }
 
 loginBtn.addEventListener('click', async () => {
-  loginBtn.disabled = true;
+  loginBtn.disabled = true; // evita cliques duplos enquanto redireciona
   try {
     await Auth.login();
   } catch (err) {
