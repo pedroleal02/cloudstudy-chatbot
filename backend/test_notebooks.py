@@ -11,8 +11,9 @@ import json
 import os
 import re
 import unittest
+from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("MODEL_ID", "modelo-de-teste")
 os.environ.setdefault("KB_ID", "KBTESTE123")
@@ -21,6 +22,7 @@ os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 
 import lambda_function as L  # noqa: E402
 import modelos as M  # noqa: E402
+import documentos as D  # noqa: E402
 import notebooks as N  # noqa: E402
 from botocore.exceptions import BotoCoreError, ClientError  # noqa: E402
 
@@ -46,6 +48,21 @@ def sem_float(valor):
             sem_float(v)
 
 
+def como_o_boto3_devolve(item):
+    """O boto3 (resource) devolve todo número do DynamoDB como Decimal, nunca como int."""
+    def converte(v):
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, int):
+            return Decimal(v)
+        if isinstance(v, dict):
+            return {k: converte(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [converte(x) for x in v]
+        return v
+    return converte(item)
+
+
 class TabelaFalsa:
     """Implementa só o que notebooks.py usa: get_item, put_item, update_item, delete_item, query, batch_writer."""
 
@@ -63,7 +80,7 @@ class TabelaFalsa:
     def get_item(self, Key, ConsistentRead=False):
         self._checar_falha()
         item = self.itens.get((Key["pk"], Key["sk"]))
-        return {"Item": dict(item)} if item else {}
+        return {"Item": como_o_boto3_devolve(item)} if item else {}
 
     def put_item(self, Item, ConditionExpression=None):
         self._checar_falha()
@@ -97,7 +114,7 @@ class TabelaFalsa:
         assert usados_valores == set(ExpressionAttributeValues), "ExpressionAttributeValues sobrando"
 
         self.itens[chave].update(novos)
-        return {"Attributes": dict(self.itens[chave])}
+        return {"Attributes": como_o_boto3_devolve(self.itens[chave])}
 
     def delete_item(self, Key):
         self._checar_falha()
@@ -119,7 +136,7 @@ class TabelaFalsa:
 
         itens = []
         for k in pagina:
-            item = dict(self.itens[k])
+            item = como_o_boto3_devolve(self.itens[k])
             if ProjectionExpression:
                 campos = [c.strip() for c in ProjectionExpression.split(",")]
                 item = {c: item[c] for c in campos}
@@ -149,14 +166,58 @@ def contexto_autenticado(sub):
     return {"authorizer": {"jwt": {"claims": {"sub": sub}, "scopes": None}}}
 
 
+class S3Falso:
+    """Bucket em memória: objetos = {chave: tamanho}. `enviar` simula o upload do navegador."""
+
+    def __init__(self):
+        self.chamadas = []  # presign
+        self.objetos = {}
+        self.falhar_com = None
+
+    def _falha(self):
+        if self.falhar_com is not None:
+            erro, self.falhar_com = self.falhar_com, None
+            raise erro
+
+    def enviar(self, chave, tamanho=1):
+        self.objetos[chave] = tamanho
+
+    def generate_presigned_post(self, Bucket, Key, Fields, Conditions, ExpiresIn):
+        self._falha()
+        self.chamadas.append({"Bucket": Bucket, "Key": Key, "Fields": Fields, "Conditions": Conditions, "ExpiresIn": ExpiresIn})
+        return {"url": f"https://{Bucket}.s3.amazonaws.com/", "fields": {**Fields, "key": Key, "policy": "p", "x-amz-signature": "s"}}
+
+    def head_object(self, Bucket, Key):
+        self._falha()
+        if Key not in self.objetos:
+            raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
+        return {"ContentLength": self.objetos[Key]}
+
+    def delete_object(self, Bucket, Key):
+        self._falha()
+        self.objetos.pop(Key, None)
+
+    def delete_objects(self, Bucket, Delete):
+        self._falha()
+        for o in Delete["Objects"]:
+            self.objetos.pop(o["Key"], None)
+        return {}
+
+
 class Base(unittest.TestCase):
 
     def setUp(self):
         self.tabela = TabelaFalsa()
         N.tabela = self.tabela
+        self.s3 = S3Falso()
+        D.s3 = self.s3
+        patcher = patch.dict(os.environ, {"DOCS_BUCKET": "bucket-de-teste"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         N.tabela = None
+        D.s3 = None
 
     def chamar(self, rota, usuario=USUARIO_A, corpo=None, notebook_id=None, bruto=None, autenticado=True):
         evento = {"routeKey": rota}
@@ -179,7 +240,7 @@ class Base(unittest.TestCase):
     def popular_filhos(self, usuario, notebook_id):
         """Documento, conversa e mensagens do notebook, gravados direto na tabela falsa."""
         itens = [
-            M.novo_documento(usuario, notebook_id, "apostila.pdf", 1000, "usuarios/x/apostila.pdf"),
+            M.novo_documento(usuario, notebook_id, "apostila.pdf", 1000, f"usuarios/{usuario}/{notebook_id}/doc.pdf"),
             conversa := M.nova_conversa(usuario, notebook_id, "Árvores"),
             M.nova_mensagem(usuario, notebook_id, conversa["conversaId"], "usuario", "O que é uma árvore?"),
             M.nova_mensagem(usuario, notebook_id, conversa["conversaId"], "assistente", "Uma estrutura...",

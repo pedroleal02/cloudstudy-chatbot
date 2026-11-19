@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+from decimal import Decimal
 
 import boto3
 from botocore.config import Config
@@ -60,6 +61,13 @@ class EntradaInvalida(Exception):
         self.mensagem = mensagem
 
 
+def _json_padrao(valor):
+    """O boto3 devolve todo número do DynamoDB como Decimal, que o json.dumps não sabe escrever."""
+    if isinstance(valor, Decimal):
+        return int(valor) if valor == valor.to_integral_value() else float(valor)
+    raise TypeError(f"Tipo não serializável: {type(valor).__name__}")
+
+
 def resposta(status, corpo):
     return {
         "statusCode": status,
@@ -68,7 +76,7 @@ def resposta(status, corpo):
             "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
         },
-        "body": "" if corpo is None else json.dumps(corpo, ensure_ascii=False),
+        "body": "" if corpo is None else json.dumps(corpo, ensure_ascii=False, default=_json_padrao),
     }
 
 
@@ -240,6 +248,10 @@ def processar_notebooks(rota, event, usuario_id, id_requisicao):
         return resposta_erro(erro.status, erro.mensagem)
     except modelos.DadoInvalido as erro:
         return resposta_erro(400, str(erro))
+    except documentos.DocumentoNaoEncontrado:  # antes de NaoEncontrado: é uma subclasse
+        return resposta_erro(404, "Documento não encontrado.")
+    except documentos.ArquivoNaoEnviado:
+        return resposta_erro(409, "O arquivo ainda não foi enviado. Envie o arquivo e confirme de novo.")
     except notebooks.NaoEncontrado:
         return resposta_erro(404, "Notebook não encontrado.")
 
@@ -279,13 +291,34 @@ def rota_atualizar_notebook(event, usuario_id):
 
 
 def rota_excluir_notebook(event, usuario_id):
-    notebooks.excluir(usuario_id, _id_do_notebook(event))
+    notebook_id = _id_do_notebook(event)
+    notebooks.obter(usuario_id, notebook_id)  # 404 antes de apagar qualquer coisa
+    documentos.apagar_todos(usuario_id, notebook_id)  # arquivos no S3 e metadados dos documentos
+    notebooks.excluir(usuario_id, notebook_id)
     return 204, None
 
 
 def rota_solicitar_upload(event, usuario_id):
     corpo = ler_corpo_json(event, EXEMPLO_UPLOAD, somente_body=True)
-    return 200, documentos.solicitar_upload(usuario_id, _id_do_notebook(event), corpo)
+    return 201, documentos.solicitar_upload(usuario_id, _id_do_notebook(event), corpo)
+
+
+def _id_do_documento(event):
+    parametros = event.get("pathParameters")
+    return parametros.get("documentoId") if isinstance(parametros, dict) else None
+
+
+def rota_listar_documentos(event, usuario_id):
+    return 200, {"documentos": documentos.listar(usuario_id, _id_do_notebook(event))}
+
+
+def rota_confirmar_documento(event, usuario_id):
+    return 200, {"documento": documentos.confirmar(usuario_id, _id_do_notebook(event), _id_do_documento(event))}
+
+
+def rota_excluir_documento(event, usuario_id):
+    documentos.excluir(usuario_id, _id_do_notebook(event), _id_do_documento(event))
+    return 204, None
 
 
 ROTAS_NOTEBOOKS = {
@@ -295,6 +328,9 @@ ROTAS_NOTEBOOKS = {
     "PATCH /notebooks/{notebookId}": rota_atualizar_notebook,
     "DELETE /notebooks/{notebookId}": rota_excluir_notebook,
     "POST /notebooks/{notebookId}/documentos/upload": rota_solicitar_upload,
+    "GET /notebooks/{notebookId}/documentos": rota_listar_documentos,
+    "POST /notebooks/{notebookId}/documentos/{documentoId}/confirmar": rota_confirmar_documento,
+    "DELETE /notebooks/{notebookId}/documentos/{documentoId}": rota_excluir_documento,
 }
 
 

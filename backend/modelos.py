@@ -224,11 +224,12 @@ def chave_s3(usuario_id, notebook_id, documento_id, tipo):
     )
 
 
-def novo_documento(usuario_id, notebook_id, nome, tamanho_bytes, chave_s3):
+def novo_documento(usuario_id, notebook_id, nome, tamanho_bytes, chave_s3, documento_id=None):
     nome, extensao = validar_arquivo(nome, tamanho_bytes)
     chave_s3 = _texto(chave_s3, "chaveS3", MAX_CHAVE_S3)
 
-    documento_id = novo_id()
+    # o ID pode vir de fora porque a chave do S3 (que usa o ID) é montada antes do item
+    documento_id = novo_id() if documento_id is None else documento_id
     agora = agora_iso()
     return {
         "pk": pk_usuario(usuario_id),
