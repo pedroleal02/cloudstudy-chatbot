@@ -30,6 +30,7 @@ MAX_DESCRICAO_NOTEBOOK = 500
 MAX_NOME_DOCUMENTO = 255
 MAX_TAMANHO_DOCUMENTO = 50 * 1024 * 1024  # a Knowledge Base ignora arquivos maiores
 MAX_CHAVE_S3 = 1024
+PREFIXO_S3_USUARIOS = "usuarios/"
 MAX_TITULO_CONVERSA = 120
 MAX_CONTEUDO_MENSAGEM = 10_000
 MAX_REFERENCIAS = 10
@@ -38,6 +39,8 @@ MAX_TRECHO_REFERENCIA = 400
 TITULO_PADRAO_CONVERSA = "Nova conversa"
 
 TIPOS_DOCUMENTO = ("md", "txt", "pdf")
+# o tipo do conteúdo é decidido aqui, a partir da extensão; nunca vem do cliente
+TIPOS_DE_CONTEUDO = {"md": "text/markdown", "txt": "text/plain", "pdf": "application/pdf"}
 STATUS_DOCUMENTO = ("PENDENTE", "ENVIADO", "PRONTO", "ERRO")
 AUTORES = ("usuario", "assistente")
 
@@ -192,9 +195,9 @@ def novo_notebook(usuario_id, nome, descricao=""):
     }
 
 
-def novo_documento(usuario_id, notebook_id, nome, tamanho_bytes, chave_s3):
+def validar_arquivo(nome, tamanho_bytes):
+    """Valida o nome e o tamanho de um arquivo. Devolve (nome limpo, tipo pela extensão)."""
     nome = _texto(nome, "nome", MAX_NOME_DOCUMENTO)
-    chave_s3 = _texto(chave_s3, "chaveS3", MAX_CHAVE_S3)
 
     extensao = nome.rsplit(".", 1)[-1].lower() if "." in nome else ""
     if extensao not in TIPOS_DOCUMENTO:
@@ -204,6 +207,26 @@ def novo_documento(usuario_id, notebook_id, nome, tamanho_bytes, chave_s3):
         raise DadoInvalido("O tamanho do arquivo é inválido.")
     if tamanho_bytes > MAX_TAMANHO_DOCUMENTO:
         raise DadoInvalido("O arquivo é grande demais (máx. 50 MB).")
+    return nome, extensao
+
+
+def chave_s3(usuario_id, notebook_id, documento_id, tipo):
+    """Chave do arquivo no bucket: usuarios/<sub>/<notebook>/<documento>.<tipo>.
+
+    Só IDs validados entram na chave. O nome original do arquivo nunca: não há como
+    escapar da pasta do usuário (../) nem quebrar a chave com caracteres especiais.
+    """
+    if tipo not in TIPOS_DOCUMENTO:
+        raise DadoInvalido("Formato não aceito. Envie arquivos .md, .txt ou .pdf.")
+    return (
+        f"{PREFIXO_S3_USUARIOS}{validar_usuario(usuario_id)}/"
+        f"{validar_id(notebook_id, 'notebook')}/{validar_id(documento_id, 'documento')}.{tipo}"
+    )
+
+
+def novo_documento(usuario_id, notebook_id, nome, tamanho_bytes, chave_s3):
+    nome, extensao = validar_arquivo(nome, tamanho_bytes)
+    chave_s3 = _texto(chave_s3, "chaveS3", MAX_CHAVE_S3)
 
     documento_id = novo_id()
     agora = agora_iso()

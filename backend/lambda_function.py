@@ -8,6 +8,7 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
+import documentos
 import modelos
 import notebooks
 
@@ -206,6 +207,7 @@ def referencias_citadas(texto, trechos):
 
 ROTA_CHAT = "POST /chat"
 EXEMPLO_NOTEBOOK = '{"nome": "...", "descricao": "..."}'
+EXEMPLO_UPLOAD = '{"nome": "apostila.pdf", "tamanhoBytes": 123456}'
 ERROS_DE_LIMITE = {"ThrottlingException", "ProvisionedThroughputExceededException", "RequestLimitExceeded"}
 
 
@@ -281,12 +283,18 @@ def rota_excluir_notebook(event, usuario_id):
     return 204, None
 
 
+def rota_solicitar_upload(event, usuario_id):
+    corpo = ler_corpo_json(event, EXEMPLO_UPLOAD, somente_body=True)
+    return 200, documentos.solicitar_upload(usuario_id, _id_do_notebook(event), corpo)
+
+
 ROTAS_NOTEBOOKS = {
     "POST /notebooks": rota_criar_notebook,
     "GET /notebooks": rota_listar_notebooks,
     "GET /notebooks/{notebookId}": rota_obter_notebook,
     "PATCH /notebooks/{notebookId}": rota_atualizar_notebook,
     "DELETE /notebooks/{notebookId}": rota_excluir_notebook,
+    "POST /notebooks/{notebookId}/documentos/upload": rota_solicitar_upload,
 }
 
 
