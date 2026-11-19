@@ -66,6 +66,26 @@
       </div>
     </section>
 
+    <details id="docs-panel" class="docs" hidden>
+      <summary>
+        <span class="docs-title">Documentos</span>
+        <span id="docs-summary" class="docs-summary"></span>
+      </summary>
+      <div class="docs-body">
+        <div class="docs-toolbar">
+          <button id="docs-upload-btn" class="primary" type="button">Enviar documentos</button>
+          <button id="docs-refresh-btn" class="ghost" type="button">Atualizar</button>
+          <input id="docs-input" type="file" accept=".pdf,.md,.txt" multiple hidden />
+        </div>
+        <p id="docs-note" class="docs-note" role="status" hidden></p>
+        <ul id="docs-list" class="docs-list"></ul>
+        <p id="docs-empty" class="docs-empty" hidden>
+          Nenhum documento ainda. Envie PDF, Markdown (.md) ou texto (.txt), até 50 MB cada.
+          As respostas do tutor usam só os arquivos deste notebook.
+        </p>
+      </div>
+    </details>
+
     <main id="chat-messages" class="chat" aria-live="polite" hidden>
       <section id="empty-state" class="empty">
         <h2>Pergunte sobre os seus materiais</h2>
@@ -133,6 +153,8 @@
   <script src="api.js"></script>
   <script src="notebooks.js"></script>
   <script src="notebooks-view.js"></script>
+  <script src="documents.js"></script>
+  <script src="documents-view.js"></script>
   <script src="script.js"></script>
 </body>
 </html>

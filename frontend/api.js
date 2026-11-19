@@ -18,7 +18,7 @@ class ApiError extends Error {
 }
 
 function createApi(env) {
-  const { getToken, onSessaoExpirada, fetchFn, timeoutMs = 35000 } = env;
+  const { getToken, onSessaoExpirada, fetchFn, timeoutMs = 35000, uploadTimeoutMs = 300000 } = env;
   // sem barra no final
   const base = String(env.baseUrl || '').replace(/\/+$/, '');
   const MSG_SESSAO_EXPIRADA = 'Sua sessão expirou. Entre de novo para continuar.';
@@ -149,8 +149,71 @@ function createApi(env) {
     await request('DELETE', pathNotebook(id));
   }
 
+  // ---------- documentos ----------
+
+  const pathDocs = (notebookId) => `${pathNotebook(notebookId)}/documentos`;
+  const documentoValido = (d) =>
+    Boolean(d) && typeof d.documentoId === 'string' && typeof d.nome === 'string' && typeof d.status === 'string';
+
+  async function listarDocumentos(notebookId) {
+    const data = await request('GET', pathDocs(notebookId));
+    if (!Array.isArray(data.documentos)) throw inesperada(200);
+    return data.documentos.filter(documentoValido);
+  }
+
+  /** Registra o documento (status PENDENTE) e devolve o POST pré-assinado do S3. */
+  async function solicitarUpload(notebookId, { nome, tamanhoBytes }) {
+    const data = await request('POST', `${pathDocs(notebookId)}/upload`, { nome, tamanhoBytes });
+    const up = data.upload;
+    if (!documentoValido(data.documento) || !up || typeof up.url !== 'string' || !up.campos || typeof up.campos !== 'object') {
+      throw inesperada(201);
+    }
+    return { documento: data.documento, upload: { url: up.url, campos: up.campos } };
+  }
+
+  /** Envia o arquivo direto ao S3. NÃO leva o token do Cognito: a autorização está nos campos assinados. */
+  async function enviarArquivo(upload, arquivo) {
+    const form = new FormData();
+    Object.entries(upload.campos).forEach(([nome, valor]) => form.append(nome, String(valor)));
+    form.append('file', arquivo); // o S3 exige o campo do arquivo por último
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), uploadTimeoutMs);
+    try {
+      const response = await fetchFn(upload.url, { method: 'POST', body: form, signal: controller.signal });
+      if (!response.ok) {
+        throw new ApiError('O armazenamento recusou o arquivo (o envio pode ter expirado). Tente enviar de novo.', {
+          status: response.status,
+        });
+      }
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+      if (err && err.name === 'AbortError') {
+        throw new ApiError('O envio demorou demais. Tente novamente.', { retryable: true });
+      }
+      throw new ApiError('Não foi possível enviar o arquivo. Verifique sua conexão e tente de novo.', { retryable: true });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  async function confirmarDocumento(notebookId, documentoId) {
+    const data = await request('POST', `${pathDocs(notebookId)}/${encodeURIComponent(documentoId)}/confirmar`);
+    if (!documentoValido(data.documento)) throw inesperada(200);
+    return data.documento;
+  }
+
+  async function excluirDocumento(notebookId, documentoId) {
+    await request('DELETE', `${pathDocs(notebookId)}/${encodeURIComponent(documentoId)}`);
+  }
+
   return {
     MSG_SESSAO_EXPIRADA,
+    listarDocumentos,
+    solicitarUpload,
+    enviarArquivo,
+    confirmarDocumento,
+    excluirDocumento,
     chat,
     listarNotebooks,
     obterNotebook,

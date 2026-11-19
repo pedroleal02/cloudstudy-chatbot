@@ -778,3 +778,121 @@ dialog p {
   min-height: 40px;
   padding: 0 1rem;
 }
+
+/* ---------- documentos do notebook ---------- */
+.docs {
+  min-width: 0;
+  border-bottom: 1px solid var(--line);
+  padding: 4px 0;
+}
+
+.docs > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 10px 0;
+  cursor: pointer;
+}
+
+.docs-title {
+  font-weight: 700;
+}
+
+.docs-summary {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.docs-body {
+  padding-bottom: 12px;
+}
+
+.docs-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.docs-note {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--user-bg);
+  font-size: 0.9rem;
+  white-space: pre-line;
+}
+
+.docs-note[data-tipo="erro"] {
+  border-color: var(--error-line);
+  background: var(--error-bg);
+  color: var(--error-ink);
+}
+
+.docs-note button {
+  margin-left: 8px;
+}
+
+.docs-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.docs-item {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.docs-info {
+  flex: 1 1 200px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.docs-nome {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.docs-meta {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.docs-status {
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.docs-status[data-tom="andamento"] {
+  color: var(--focus);
+}
+
+.docs-status[data-tom="erro"] {
+  color: var(--error-ink);
+}
+
+.docs-status[data-tom="aviso"] {
+  color: var(--muted);
+}
+
+.docs-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}

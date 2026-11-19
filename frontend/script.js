@@ -262,12 +262,20 @@ function limparConversa() {
 
 let notebookAtualId = null; // o chat sempre pergunta dentro de um notebook
 
+const docs = createDocuments({ api: Api, view: DocumentsView });
+DocumentsView.ligar({
+  escolher: (arquivos) => docs.enviar(arquivos),
+  excluir: (id) => docs.excluir(id),
+  atualizar: () => docs.atualizar(),
+});
+
 const notebooks = createNotebooks({
   api: Api,
   storage: window.sessionStorage,
   view: NotebooksView,
   onAbrir: (notebook) => {
     notebookAtualId = notebook.notebookId;
+    docs.abrir(notebook.notebookId);
     limparConversa();
     chat.hidden = false;
     composer.hidden = false;
@@ -275,6 +283,7 @@ const notebooks = createNotebooks({
   },
   onFechar: () => {
     notebookAtualId = null;
+    docs.fechar();
     chat.hidden = true;
     composer.hidden = true;
     clearBtn.hidden = true;
@@ -294,6 +303,7 @@ function showApp(user) {
 }
 
 function showLogin(mensagem) {
+  docs.fechar();
   notebooks.reset();
   chat.hidden = true;
   composer.hidden = true;
