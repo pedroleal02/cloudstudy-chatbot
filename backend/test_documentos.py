@@ -188,22 +188,23 @@ class TestConfirmar(BaseDocs):
         self.assertIn("ainda não foi enviado", corpo["erro"])
         self.assertEqual(self.chamar_doc(LISTAR, nb)[1]["documentos"][0]["status"], "PENDENTE")
 
-    def test_com_arquivo_no_s3_passa_para_enviado(self):
+    def test_com_arquivo_no_s3_grava_metadados_e_inicia_a_indexacao(self):
         nb, doc = self.enviar_arquivo()
         status, corpo, _ = self.chamar_doc(CONFIRMAR, nb, doc["documentoId"])
         self.assertEqual(status, 200)
-        self.assertEqual(corpo["documento"]["status"], "ENVIADO")
+        self.assertEqual(corpo["documento"]["status"], "INDEXANDO")
         self.assertEqual(corpo["documento"]["nome"], "apostila.pdf")
         self.assertEqual(corpo["documento"]["tamanhoBytes"], 2048)
         self.assertNotIn("chaveS3", str(corpo))
-        self.assertEqual(self.chamar_doc(LISTAR, nb)[1]["documentos"][0]["status"], "ENVIADO")
+        self.assertEqual(self.chamar_doc(LISTAR, nb)[1]["documentos"][0]["status"], "INDEXANDO")
 
     def test_confirmar_de_novo_e_idempotente_e_nao_consulta_o_s3(self):
         nb, doc = self.enviar_arquivo()
         self.chamar_doc(CONFIRMAR, nb, doc["documentoId"])
         self.s3.falhar_com = ClientError({"Error": {"Code": "500", "Message": "x"}}, "HeadObject")
         status, corpo, _ = self.chamar_doc(CONFIRMAR, nb, doc["documentoId"])
-        self.assertEqual((status, corpo["documento"]["status"]), (200, "ENVIADO"))
+        self.assertEqual((status, corpo["documento"]["status"]), (200, "INDEXANDO"))
+        self.assertEqual(len(self.agente.chamadas), 1)  # não dispara outra sincronização
 
     def test_documento_de_outro_usuario_inexistente_ou_de_outro_notebook_devolve_404(self):
         nb_a, doc_a = self.enviar_arquivo(USUARIO_A)
@@ -312,7 +313,7 @@ class TestExcluirNotebookComDocumentos(BaseDocs):
         self.s3.delete_objects = lambda Bucket, Delete: (lotes.append(len(Delete["Objects"])), original(Bucket, Delete))[1]
         with patch.object(D, "LOTE_EXCLUSAO_S3", 2):
             self.assertEqual(self.chamar_doc(EXCLUIR_NOTEBOOK, nb)[0], 204)
-        self.assertEqual(lotes, [2, 2, 1])
+        self.assertEqual(lotes, [2, 2, 2, 2, 2])  # 5 arquivos + 5 arquivos de metadados
 
     def test_erros_do_s3_na_resposta_do_lote_abortam_a_exclusao(self):
         nb, _ = self.enviar_arquivo()
@@ -321,7 +322,130 @@ class TestExcluirNotebookComDocumentos(BaseDocs):
         self.assertEqual(self.chamar(  "GET /notebooks/{notebookId}", notebook_id=nb)[0], 200)
 
 
+class TestIndexacao(BaseDocs):
+    """Metadados, sincronização com a Knowledge Base e estados do documento."""
+
+    def confirmar(self, nb, doc, usuario=USUARIO_A):
+        return self.chamar_doc(CONFIRMAR, nb, doc["documentoId"], usuario)
+
+    def estados(self, nb, usuario=USUARIO_A):
+        return [d["status"] for d in self.chamar_doc(LISTAR, nb, usuario=usuario)[1]["documentos"]]
+
+    def test_metadados_gravados_ao_lado_do_arquivo_com_usuario_e_notebook(self):
+        import json
+        nb, doc = self.enviar_arquivo()
+        self.confirmar(nb, doc)
+        chave = f"usuarios/{USUARIO_A}/{nb}/{doc['documentoId']}.pdf"
+        self.assertEqual(json.loads(self.s3.corpos[chave + ".metadata.json"]), {"metadataAttributes": {
+            "userId": USUARIO_A, "notebookId": nb, "documentId": doc["documentoId"]}})
+        self.assertEqual(self.agente.chamadas[0][:2], ("KBTESTE123", "DSTESTE123"))
+
+    def test_nao_expoe_o_id_do_job(self):
+        nb, doc = self.enviar_arquivo()
+        _, corpo, _ = self.confirmar(nb, doc)
+        self.assertNotIn("ingestionJobId", str(corpo))
+        self.assertNotIn("JOB1", str(self.chamar_doc(LISTAR, nb)[1]))
+
+    def test_indexando_vira_pronto_quando_o_job_termina(self):
+        nb, doc = self.enviar_arquivo()
+        self.confirmar(nb, doc)
+        self.assertEqual(self.estados(nb), ["INDEXANDO"])
+        self.agente.concluir("JOB1")
+        self.assertEqual(self.estados(nb), ["PRONTO"])
+        self.assertEqual(self.estados(nb), ["PRONTO"])  # estável
+
+    def test_job_com_falha_vira_erro(self):
+        for status, falhas in (("COMPLETE", 1), ("FAILED", 0), ("STOPPED", 0)):
+            with self.subTest(status=status):
+                self.setUp()
+                nb, doc = self.enviar_arquivo()
+                self.confirmar(nb, doc)
+                self.agente.concluir("JOB1", status, falhas)
+                self.assertEqual(self.estados(nb), ["ERRO"])
+
+    def test_sincronizacao_ocupada_deixa_enviado_e_a_listagem_tenta_de_novo(self):
+        nb, doc = self.enviar_arquivo()
+        self.agente.ocupado = True
+        self.assertEqual(self.confirmar(nb, doc)[1]["documento"]["status"], "ENVIADO")
+        self.assertEqual(self.estados(nb), ["ENVIADO"])  # segue ocupado
+        self.agente.ocupado = False
+        self.assertEqual(self.estados(nb), ["INDEXANDO"])
+        self.agente.concluir("JOB1")
+        self.assertEqual(self.estados(nb), ["PRONTO"])
+
+    def test_um_job_serve_para_varios_documentos(self):
+        nb, d1 = self.enviar_arquivo(nome="a.pdf")
+        _, d2 = self.enviar_arquivo(nome="b.md", nb=nb)
+        self.agente.ocupado = True
+        self.confirmar(nb, d1)
+        self.confirmar(nb, d2)
+        self.agente.ocupado = False
+        self.assertEqual(self.estados(nb), ["INDEXANDO", "INDEXANDO"])
+        self.assertEqual(len(self.agente.chamadas), 1)
+
+    def test_falha_da_knowledge_base_nao_quebra_a_listagem(self):
+        nb, doc = self.enviar_arquivo()
+        self.confirmar(nb, doc)
+        self.agente.falhar_com = ClientError({"Error": {"Code": "AccessDeniedException", "Message": "arn:aws:bedrock:x"}}, "GetIngestionJob")
+        status, corpo, bruto = self.chamar_doc(LISTAR, nb)
+        self.assertEqual((status, corpo["documentos"][0]["status"]), (200, "INDEXANDO"))
+        self.assertNotIn("arn:aws", bruto["body"])
+
+    def test_sem_data_source_configurado_o_confirmar_falha_e_continua_pendente(self):
+        nb, doc = self.enviar_arquivo()
+        with patch.dict(os.environ):
+            os.environ.pop("DATA_SOURCE_ID")
+            status, _, bruto = self.confirmar(nb, doc)
+        self.assertEqual(status, 500)
+        self.assertNotIn("DATA_SOURCE_ID", bruto["body"])
+        self.assertEqual(self.estados(nb), ["PENDENTE"])
+        self.assertEqual(self.confirmar(nb, doc)[0], 200)  # repetir depois de corrigir funciona
+
+    def test_excluir_apaga_o_arquivo_de_metadados_e_pede_nova_sincronizacao(self):
+        nb, doc = self.enviar_arquivo()
+        self.confirmar(nb, doc)
+        self.assertEqual(len(self.s3.objetos), 2)
+        self.assertEqual(self.chamar_doc(EXCLUIR, nb, doc["documentoId"])[0], 204)
+        self.assertEqual(self.s3.objetos, {})
+        self.assertEqual(len(self.agente.chamadas), 2)
+
+    def test_excluir_nao_falha_se_a_sincronizacao_falhar(self):
+        nb, doc = self.enviar_arquivo()
+        self.agente.falhar_com = ClientError({"Error": {"Code": "AccessDeniedException", "Message": "x"}}, "StartIngestionJob")
+        self.assertEqual(self.chamar_doc(EXCLUIR, nb, doc["documentoId"])[0], 204)
+        self.assertEqual(self.estados(nb), [])
+
+    def test_excluir_notebook_apaga_os_metadados_e_pede_sincronizacao(self):
+        nb, doc = self.enviar_arquivo()
+        self.confirmar(nb, doc)
+        self.chamar_doc(EXCLUIR_NOTEBOOK, nb)
+        self.assertEqual(self.s3.objetos, {})
+        self.assertEqual(len(self.agente.chamadas), 2)
+
+    def test_politica_de_upload_nunca_aceita_a_chave_de_metadados(self):
+        nb = self.criar()["notebookId"]
+        for nome in ("a.pdf", "a.md", "a.txt", "a.pdf.metadata.json", "a.metadata.json"):
+            self.pedir(nb, nome, 10)
+        chaves = [c["Key"] for c in self.s3.chamadas]
+        self.assertEqual(len(chaves), 3)  # os nomes .json são recusados
+        self.assertTrue(all(not k.endswith(".metadata.json") for k in chaves))
+
+    def test_outro_usuario_nao_confirma_nem_avanca_estados(self):
+        nb, doc = self.enviar_arquivo(USUARIO_A)
+        self.assertEqual(self.confirmar(nb, doc, USUARIO_B)[0], 404)
+        self.assertEqual(self.agente.chamadas, [])
+        self.assertEqual(self.estados(nb), ["PENDENTE"])
+
+
 class TestModelosDeArquivo(unittest.TestCase):
+
+    def test_metadados_kb(self):
+        nb, doc = M.novo_id(), M.novo_id()
+        self.assertEqual(M.metadados_kb(USUARIO_A, nb, doc), {"metadataAttributes": {"userId": USUARIO_A, "notebookId": nb, "documentId": doc}})
+        self.assertEqual(M.chave_metadados("usuarios/x/y.pdf"), "usuarios/x/y.pdf.metadata.json")
+        with self.assertRaises(M.DadoInvalido):
+            M.metadados_kb(USUARIO_A, "x#y", doc)
+
 
     def test_chave_s3(self):
         nb, doc = M.novo_id(), M.novo_id()

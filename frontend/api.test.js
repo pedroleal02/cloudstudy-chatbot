@@ -43,22 +43,30 @@ const NB = { notebookId: '01JD5ZK3Q8X7M2N4P6R8T0V2WY', nome: 'IA', descricao: ''
 
 // ---------- chat ----------
 
-test('chat envia POST /chat com token e a pergunta', async () => {
+test('chat envia POST /chat com token, a pergunta e o notebook', async () => {
   const { api, chamadas } = montar({ fetchFn: async () => resposta(200, { resposta: 'Oi [1].', referencias: [] }) });
-  const dados = await api.chat('O que é recursão?');
+  const dados = await api.chat('O que é recursão?', NB.notebookId);
   assert.equal(dados.resposta, 'Oi [1].');
   assert.equal(chamadas[0].url, `${BASE}/chat`);
   assert.equal(chamadas[0].method, 'POST');
   assert.equal(chamadas[0].headers.Authorization, 'Bearer token-123');
   assert.equal(chamadas[0].headers['Content-Type'], 'application/json');
-  assert.deepEqual(chamadas[0].corpo, { pergunta: 'O que é recursão?' });
+  assert.deepEqual(chamadas[0].corpo, { pergunta: 'O que é recursão?', notebookId: NB.notebookId });
 });
 
 test('chat sem texto de resposta vira erro que pode ser repetido', async () => {
   for (const corpo of [{}, { resposta: '' }, { resposta: '   ' }, { resposta: 5 }]) {
     const { api } = montar({ fetchFn: async () => resposta(200, corpo) });
-    await assert.rejects(api.chat('oi'), (e) => e instanceof ApiError && e.retryable);
+    await assert.rejects(api.chat('oi', NB.notebookId), (e) => e instanceof ApiError && e.retryable);
   }
+});
+
+test('chat sem notebook falha antes de chamar a rede', async () => {
+  const { api, chamadas } = montar();
+  for (const ruim of [undefined, null, '', 5]) {
+    await assert.rejects(api.chat('oi', ruim), (e) => e instanceof ApiError && !e.retryable && /notebook/.test(e.message));
+  }
+  assert.equal(chamadas.length, 0);
 });
 
 // ---------- token e sessão ----------

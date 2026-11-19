@@ -107,9 +107,12 @@ function createApi(env) {
 
   // ---------- chat ----------
 
-  /** POST /chat -> { resposta, referencias } */
-  async function chat(pergunta) {
-    const data = await request('POST', '/chat', { pergunta }); // a Lambda espera "pergunta"
+  /** POST /chat -> { resposta, referencias }. A busca é feita só nos documentos deste notebook. */
+  async function chat(pergunta, notebookId) {
+    if (typeof notebookId !== 'string' || !notebookId) {
+      throw new ApiError('Abra um notebook para fazer perguntas.');
+    }
+    const data = await request('POST', '/chat', { pergunta, notebookId });
     if (typeof data.resposta !== 'string' || !data.resposta.trim()) {
       throw new ApiError('A API não devolveu uma resposta.', { retryable: true });
     }

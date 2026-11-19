@@ -172,6 +172,7 @@ class S3Falso:
     def __init__(self):
         self.chamadas = []  # presign
         self.objetos = {}
+        self.corpos = {}  # conteúdo dos objetos gravados pela Lambda (metadados)
         self.falhar_com = None
 
     def _falha(self):
@@ -186,6 +187,11 @@ class S3Falso:
         self._falha()
         self.chamadas.append({"Bucket": Bucket, "Key": Key, "Fields": Fields, "Conditions": Conditions, "ExpiresIn": ExpiresIn})
         return {"url": f"https://{Bucket}.s3.amazonaws.com/", "fields": {**Fields, "key": Key, "policy": "p", "x-amz-signature": "s"}}
+
+    def put_object(self, Bucket, Key, Body, ContentType):
+        self._falha()
+        self.objetos[Key] = len(Body)
+        self.corpos[Key] = Body
 
     def head_object(self, Bucket, Key):
         self._falha()
@@ -204,6 +210,35 @@ class S3Falso:
         return {}
 
 
+class AgenteFalso:
+    """bedrock-agent: sincronização (ingestion job) da Knowledge Base."""
+
+    def __init__(self):
+        self.jobs = {}
+        self.ocupado = False
+        self.falhar_com = None
+        self.chamadas = []
+
+    def start_ingestion_job(self, knowledgeBaseId, dataSourceId):
+        if self.falhar_com is not None:
+            raise self.falhar_com
+        if self.ocupado:
+            raise ClientError({"Error": {"Code": "ConflictException", "Message": "job em andamento"}}, "StartIngestionJob")
+        job_id = f"JOB{len(self.jobs) + 1}"
+        self.jobs[job_id] = {"status": "IN_PROGRESS", "falhas": 0}
+        self.chamadas.append((knowledgeBaseId, dataSourceId, job_id))
+        return {"ingestionJob": {"ingestionJobId": job_id, "status": "STARTING"}}
+
+    def get_ingestion_job(self, knowledgeBaseId, dataSourceId, ingestionJobId):
+        if self.falhar_com is not None:
+            raise self.falhar_com
+        j = self.jobs[ingestionJobId]
+        return {"ingestionJob": {"status": j["status"], "statistics": {"numberOfDocumentsFailed": j["falhas"]}}}
+
+    def concluir(self, job_id, status="COMPLETE", falhas=0):
+        self.jobs[job_id].update(status=status, falhas=falhas)
+
+
 class Base(unittest.TestCase):
 
     def setUp(self):
@@ -211,13 +246,16 @@ class Base(unittest.TestCase):
         N.tabela = self.tabela
         self.s3 = S3Falso()
         D.s3 = self.s3
-        patcher = patch.dict(os.environ, {"DOCS_BUCKET": "bucket-de-teste"})
+        self.agente = AgenteFalso()
+        D.agente = self.agente
+        patcher = patch.dict(os.environ, {"DOCS_BUCKET": "bucket-de-teste", "KB_ID": "KBTESTE123", "DATA_SOURCE_ID": "DSTESTE123"})
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def tearDown(self):
         N.tabela = None
         D.s3 = None
+        D.agente = None
 
     def chamar(self, rota, usuario=USUARIO_A, corpo=None, notebook_id=None, bruto=None, autenticado=True):
         evento = {"routeKey": rota}
@@ -595,7 +633,8 @@ class TestAutenticacaoERotas(Base):
         L.agente.retrieve.return_value = {"retrievalResults": []}
         L.bedrock = MagicMock()
         L.bedrock.converse.return_value = {"output": {"message": {"content": [{"text": "Não encontrei isso nos materiais."}]}}}
-        evento = {"routeKey": "POST /chat", "body": json.dumps({"pergunta": "O que é recursão?"}),
+        nb = self.criar()["notebookId"]
+        evento = {"routeKey": "POST /chat", "body": json.dumps({"pergunta": "O que é recursão?", "notebookId": nb}),
                   "requestContext": contexto_autenticado(USUARIO_A)}
         r = L.lambda_handler(evento, CONTEXTO)
         self.assertEqual(r["statusCode"], 200)

@@ -190,7 +190,7 @@ async function ask(pergunta, { echo = true } = {}) {
   scrollToBottom();
 
   try {
-    const dados = await Api.chat(pergunta);
+    const dados = await Api.chat(pergunta, notebookAtualId);
     loading.remove();
     const node = addBot(dados.resposta, dados.referencias);
     node.scrollIntoView({ behavior: scrollBehavior(), block: 'start' });
@@ -260,17 +260,21 @@ function limparConversa() {
   updateComposer();
 }
 
+let notebookAtualId = null; // o chat sempre pergunta dentro de um notebook
+
 const notebooks = createNotebooks({
   api: Api,
   storage: window.sessionStorage,
   view: NotebooksView,
-  onAbrir: () => {
+  onAbrir: (notebook) => {
+    notebookAtualId = notebook.notebookId;
     limparConversa();
     chat.hidden = false;
     composer.hidden = false;
     if (window.matchMedia('(pointer: fine)').matches) input.focus();
   },
   onFechar: () => {
+    notebookAtualId = null;
     chat.hidden = true;
     composer.hidden = true;
     clearBtn.hidden = true;

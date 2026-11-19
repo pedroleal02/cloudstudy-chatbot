@@ -41,7 +41,8 @@ TITULO_PADRAO_CONVERSA = "Nova conversa"
 TIPOS_DOCUMENTO = ("md", "txt", "pdf")
 # o tipo do conteúdo é decidido aqui, a partir da extensão; nunca vem do cliente
 TIPOS_DE_CONTEUDO = {"md": "text/markdown", "txt": "text/plain", "pdf": "application/pdf"}
-STATUS_DOCUMENTO = ("PENDENTE", "ENVIADO", "PRONTO", "ERRO")
+# PENDENTE: registrado | ENVIADO: no S3, aguardando indexação | INDEXANDO: sincronização em andamento
+STATUS_DOCUMENTO = ("PENDENTE", "ENVIADO", "INDEXANDO", "PRONTO", "ERRO")
 AUTORES = ("usuario", "assistente")
 
 # mesmo padrão do lambda_function.py (sub do Cognito)
@@ -51,7 +52,7 @@ ID_DE_ITEM = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
 CARACTERES_DE_CONTROLE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 # atributos internos: nunca devolvidos ao frontend
-_ATRIBUTOS_INTERNOS = frozenset({"pk", "sk", "entidade", "usuarioId", "chaveS3"})
+_ATRIBUTOS_INTERNOS = frozenset({"pk", "sk", "entidade", "usuarioId", "chaveS3", "ingestionJobId"})
 
 
 class DadoInvalido(ValueError):
@@ -222,6 +223,23 @@ def chave_s3(usuario_id, notebook_id, documento_id, tipo):
         f"{PREFIXO_S3_USUARIOS}{validar_usuario(usuario_id)}/"
         f"{validar_id(notebook_id, 'notebook')}/{validar_id(documento_id, 'documento')}.{tipo}"
     )
+
+
+SUFIXO_METADADOS_KB = ".metadata.json"
+
+
+def chave_metadados(chave):
+    """Arquivo de metadados da Knowledge Base: fica ao lado do documento, com este nome."""
+    return chave + SUFIXO_METADADOS_KB
+
+
+def metadados_kb(usuario_id, notebook_id, documento_id):
+    """Conteúdo do arquivo de metadados. A busca filtra por userId e notebookId."""
+    return {"metadataAttributes": {
+        "userId": validar_usuario(usuario_id),
+        "notebookId": validar_id(notebook_id, "notebook"),
+        "documentId": validar_id(documento_id, "documento"),
+    }}
 
 
 def novo_documento(usuario_id, notebook_id, nome, tamanho_bytes, chave_s3, documento_id=None):

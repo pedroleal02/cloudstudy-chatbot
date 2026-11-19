@@ -16,6 +16,9 @@ os.environ.setdefault("AWS_REGION", "us-east-1")
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 
 import lambda_function as L  # noqa: E402
+import modelos as M  # noqa: E402
+import notebooks as N  # noqa: E402
+from test_notebooks import TabelaFalsa  # noqa: E402
 from botocore.exceptions import BotoCoreError, ClientError  # noqa: E402
 
 CONTEXTO = SimpleNamespace(aws_request_id="req-12345678")
@@ -29,11 +32,18 @@ def contexto_autenticado(sub=USUARIO_A):
     return {"authorizer": {"jwt": {"claims": {"sub": sub}, "scopes": None}}}
 
 
-def trecho(texto, arquivo="recursao.md", score=0.8):
+NB_ID = "01JD5ZK3Q8X7M2N4P6R8T0V2WY"
+
+
+def trecho(texto, arquivo="recursao.md", score=0.8, usuario=USUARIO_A, notebook=NB_ID, documento=None):
+    meta = {} if usuario is None else {"userId": usuario, "notebookId": notebook}
+    if documento:
+        meta["documentId"] = documento
     return {
         "content": {"text": texto},
-        "location": {"type": "S3", "s3Location": {"uri": f"s3://bucket-secreto/documentos/mat/{arquivo}"}},
+        "location": {"type": "S3", "s3Location": {"uri": f"s3://bucket-secreto/usuarios/{arquivo}"}},
         "score": score,
+        "metadata": meta,
     }
 
 
@@ -44,6 +54,13 @@ def erro_aws(codigo):
 class TestLambda(unittest.TestCase):
 
     def setUp(self):
+        # a Lambda confere no DynamoDB (falso) que o notebook é do usuário
+        self.tabela = TabelaFalsa()
+        N.tabela = self.tabela
+        nb = M.novo_notebook(USUARIO_A, "IA")
+        nb["notebookId"], nb["sk"] = NB_ID, M.sk_notebook(NB_ID)
+        self.tabela.itens[(nb["pk"], nb["sk"])] = nb
+        self.addCleanup(setattr, N, "tabela", None)
         L.agente = MagicMock()
         L.bedrock = MagicMock()
         L.SCORE_MINIMO = 0.0
@@ -55,15 +72,80 @@ class TestLambda(unittest.TestCase):
     def responder(self, texto):
         L.bedrock.converse.return_value = {"output": {"message": {"content": [{"text": texto}]}}}
 
-    def chamar(self, corpo, bruto=False, autenticado=True):
+    def chamar(self, corpo, bruto=False, autenticado=True, usuario=USUARIO_A):
+        if not bruto and isinstance(corpo, dict) and "notebookId" not in corpo:
+            corpo = {**corpo, "notebookId": NB_ID}
         evento = {"body": corpo if bruto else json.dumps(corpo)}
         if autenticado:
-            evento["requestContext"] = contexto_autenticado()
+            evento["requestContext"] = contexto_autenticado(usuario)
         r = L.lambda_handler(evento, CONTEXTO)
         return r["statusCode"], json.loads(r["body"]), r
 
     def mensagem_enviada_ao_modelo(self):
         return L.bedrock.converse.call_args.kwargs["messages"][0]["content"][0]["text"]
+
+    # ---------- busca por notebook: filtros e isolamento ----------
+
+    def filtro_enviado(self):
+        return L.agente.retrieve.call_args.kwargs["retrievalConfiguration"]["vectorSearchConfiguration"]["filter"]
+
+    def test_busca_filtra_por_usuario_e_notebook(self):
+        self.chamar({"pergunta": "O que é recursão?"})
+        self.assertEqual(self.filtro_enviado(), {"andAll": [
+            {"equals": {"key": "userId", "value": USUARIO_A}},
+            {"equals": {"key": "notebookId", "value": NB_ID}},
+        ]})
+
+    def test_usuario_do_corpo_nao_muda_o_filtro(self):
+        self.chamar({"pergunta": "O que é recursão?", "userId": USUARIO_B, "sub": USUARIO_B, "filter": {"x": 1}})
+        valores = [c["equals"]["value"] for c in self.filtro_enviado()["andAll"]]
+        self.assertEqual(valores, [USUARIO_A, NB_ID])
+
+    def test_notebookid_obrigatorio(self):
+        for corpo in ({"pergunta": "O que é recursão?", "notebookId": None}, {"pergunta": "O que é recursão?", "notebookId": ""},
+                      {"pergunta": "O que é recursão?", "notebookId": 5}):
+            status, resp, _ = self.chamar(corpo)
+            self.assertEqual(status, 400)
+            self.assertIn("notebookId", resp["erro"])
+        L.agente.retrieve.assert_not_called()
+
+    def test_notebook_de_outro_usuario_devolve_404_sem_buscar_nem_chamar_o_modelo(self):
+        status, resp, _ = self.chamar({"pergunta": "O que é recursão?"}, usuario=USUARIO_B)
+        self.assertEqual((status, resp), (404, {"erro": "Notebook não encontrado."}))
+        L.agente.retrieve.assert_not_called()
+        L.bedrock.converse.assert_not_called()
+
+    def test_notebook_inexistente_ou_malformado_devolve_404(self):
+        for nid in (M.novo_id(), "abc", "../x", "NB#1"):
+            self.assertEqual(self.chamar({"pergunta": "O que é recursão?", "notebookId": nid})[0], 404)
+        L.agente.retrieve.assert_not_called()
+
+    def test_trecho_de_outro_usuario_notebook_ou_sem_metadados_e_descartado(self):
+        L.agente.retrieve.return_value = {"retrievalResults": [
+            trecho("segredo do B", usuario=USUARIO_B),
+            trecho("de outro notebook", notebook=M.novo_id()),
+            trecho("material geral sem metadados", usuario=None),
+            trecho("meu trecho"),
+        ]}
+        self.chamar({"pergunta": "O que é recursão?"})
+        enviado = self.mensagem_enviada_ao_modelo()
+        self.assertIn("meu trecho", enviado)
+        for proibido in ("segredo do B", "de outro notebook", "material geral"):
+            self.assertNotIn(proibido, enviado)
+
+    def test_fonte_citada_pelo_nome_original_do_documento(self):
+        doc = M.novo_documento(USUARIO_A, NB_ID, "Apostila de Probabilidade.pdf", 100, f"usuarios/{USUARIO_A}/{NB_ID}/x.pdf")
+        self.tabela.itens[(doc["pk"], doc["sk"])] = doc
+        L.agente.retrieve.return_value = {"retrievalResults": [trecho("Recursão é...", arquivo="abc.pdf", documento=doc["documentoId"])]}
+        _, corpo, _ = self.chamar({"pergunta": "O que é recursão?"})
+        self.assertEqual(corpo["referencias"][0]["arquivo"], "Apostila de Probabilidade.pdf")
+        self.assertNotIn(doc["documentoId"], str(corpo))
+
+    def test_sem_trechos_nao_consulta_os_documentos(self):
+        L.agente.retrieve.return_value = {"retrievalResults": []}
+        self.tabela.consultas.clear()
+        self.chamar({"pergunta": "O que é recursão?"})
+        self.assertEqual(self.tabela.consultas, [])
 
     # ---------- caminho feliz e perguntas sem resposta ----------
 
@@ -171,8 +253,10 @@ class TestLambda(unittest.TestCase):
         self.assertEqual(L.identificar_usuario(evento), USUARIO_A)
 
     def test_usuario_autenticado_recebe_200(self):
+        nb_b = M.novo_notebook(USUARIO_B, "Do B")
+        self.tabela.itens[(nb_b["pk"], nb_b["sk"])] = nb_b
         evento = {
-            "body": json.dumps({"pergunta": "O que é recursão?"}),
+            "body": json.dumps({"pergunta": "O que é recursão?", "notebookId": nb_b["notebookId"]}),
             "requestContext": contexto_autenticado(USUARIO_B),
         }
         self.assertEqual(L.lambda_handler(evento, CONTEXTO)["statusCode"], 200)

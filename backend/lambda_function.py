@@ -127,8 +127,9 @@ def ler_corpo_json(event, exemplo, somente_body=False):
     return corpo
 
 
-def extrair_pergunta(event):
-    corpo = ler_corpo_json(event, '{"pergunta": "..."}')
+def extrair_pedido(event):
+    """Valida o corpo do chat. Devolve (pergunta, notebook_id)."""
+    corpo = ler_corpo_json(event, '{"pergunta": "...", "notebookId": "..."}')
 
     pergunta = corpo.get("pergunta")
     if not isinstance(pergunta, str):
@@ -143,7 +144,11 @@ def extrair_pergunta(event):
     if len(pergunta) > MAX_PERGUNTA:
         raise EntradaInvalida(400, f"A pergunta é longa demais (máx. {MAX_PERGUNTA} caracteres).")
 
-    return pergunta
+    notebook_id = corpo.get("notebookId")
+    if not isinstance(notebook_id, str) or not notebook_id:
+        raise EntradaInvalida(400, "O campo 'notebookId' é obrigatório.")
+
+    return pergunta, notebook_id
 
 
 def nome_arquivo(local):
@@ -151,15 +156,33 @@ def nome_arquivo(local):
     return uri.rsplit("/", 1)[-1] or "documento"
 
 
-def recuperar_trechos(pergunta):
+def filtro_do_notebook(usuario_id, notebook_id):
+    """Filtro de metadados da Knowledge Base: só trechos deste usuário E deste notebook."""
+    return {"andAll": [
+        {"equals": {"key": "userId", "value": usuario_id}},
+        {"equals": {"key": "notebookId", "value": notebook_id}},
+    ]}
+
+
+def recuperar_trechos(pergunta, usuario_id, notebook_id):
     r = agente.retrieve(
         knowledgeBaseId=KB_ID,
         retrievalQuery={"text": pergunta},
-        retrievalConfiguration={"vectorSearchConfiguration": {"numberOfResults": N_RESULTADOS}},
+        retrievalConfiguration={"vectorSearchConfiguration": {
+            "numberOfResults": N_RESULTADOS,
+            "filter": filtro_do_notebook(usuario_id, notebook_id),
+        }},
     )
+    resultados = r.get("retrievalResults", [])
+    nomes = documentos.nomes_por_id(usuario_id, notebook_id) if resultados else {}
 
     trechos = []
-    for item in r.get("retrievalResults", []):
+    for item in resultados:
+        meta = item.get("metadata") or {}
+        # defesa em profundidade: o filtro já restringe, mas só passa o que os metadados confirmam
+        if meta.get("userId") != usuario_id or meta.get("notebookId") != notebook_id:
+            logger.warning("Trecho descartado: metadados não conferem com o usuário e o notebook.")
+            continue
         texto = ((item.get("content") or {}).get("text") or "").strip()
         score = item.get("score")
         if not texto:
@@ -169,7 +192,8 @@ def recuperar_trechos(pergunta):
             continue
         trechos.append({
             "texto": texto,
-            "arquivo": nome_arquivo(item.get("location")),
+            # cita pelo nome que o usuário deu; se não achar, pelo nome do arquivo no S3
+            "arquivo": nomes.get(meta.get("documentId")) or nome_arquivo(item.get("location")),
             "score": score,
         })
     return trechos
@@ -336,15 +360,17 @@ ROTAS_NOTEBOOKS = {
 
 def processar_chat(event, usuario_id, id_requisicao):
     try:
-        pergunta = extrair_pergunta(event)
+        pergunta, notebook_id = extrair_pedido(event)
     except EntradaInvalida as erro:
         return resposta_erro(erro.status, erro.mensagem)
 
     logger.info("Pergunta recebida: usuario=%s", usuario_id[:8])
 
-    etapa = "recuperação"
+    etapa = "validação do notebook"
     try:
-        trechos = recuperar_trechos(pergunta)
+        notebooks.obter(usuario_id, notebook_id)  # 404 se não existir ou não for do usuário
+        etapa = "recuperação"
+        trechos = recuperar_trechos(pergunta, usuario_id, notebook_id)
 
         if not trechos:
             logger.info("Nenhum trecho relevante para a pergunta.")
@@ -355,6 +381,9 @@ def processar_chat(event, usuario_id, id_requisicao):
             "resposta": texto,
             "referencias": referencias_citadas(texto, trechos),
         })
+
+    except notebooks.NaoEncontrado:
+        return resposta_erro(404, "Notebook não encontrado.")
 
     except ClientError as erro:
         codigo = erro.response.get("Error", {}).get("Code", "Desconhecido")
